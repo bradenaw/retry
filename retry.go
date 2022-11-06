@@ -113,7 +113,6 @@ func Retry[T any](
 		}
 		lastErr = err
 
-		attempts = append(attempts, now)
 		for len(attempts) > attemptsSize ||
 			(len(attempts) > 0 && now.Sub(attempts[0]) > attemptsMaxAge) {
 
@@ -129,6 +128,8 @@ func Retry[T any](
 		if !ok {
 			return zero, lastErr
 		}
+
+		attempts = append(attempts, now)
 	}
 	if lastErr == nil {
 		return zero, errNoAttempts
