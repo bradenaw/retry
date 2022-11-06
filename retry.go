@@ -161,7 +161,7 @@ func saturatingMul(d time.Duration, x int) time.Duration {
 }
 
 func saturatingAdd(a, b time.Duration) time.Duration {
-	if math.MaxInt64-int64(a) > int64(b) {
+	if math.MaxInt64-int64(a) < int64(b) {
 		return maxDuration
 	}
 	return a + b
