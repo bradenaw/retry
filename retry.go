@@ -21,6 +21,7 @@ type options struct {
 	maxDelay  time.Duration
 	attempts  int
 	retryable func(error) bool
+	log       func(error, int, time.Duration)
 }
 
 // The minimum delay between attempts.
@@ -33,7 +34,8 @@ func MaxDelay(d time.Duration) Option {
 	return Option{func(o *options) { o.maxDelay = d }}
 }
 
-// The maximum number of times to call f. Attempts(1) means try just once and do not retry.
+// The maximum number of times to call f before returning the error. Attempts(1) means try just once
+// and do not retry.
 func Attempts(x int) Option {
 	return Option{func(o *options) { o.attempts = x }}
 }
@@ -47,17 +49,26 @@ func Retryable(f func(error) bool) Option {
 	return Option{func(o *options) { o.retryable = f }}
 }
 
+// Called before sleeping on each retry with the last error that occurred, the attempt index, and
+// the delay before the next attempt.
+func Log(f func(error, int, time.Duration)) Option {
+	return Option{func(o *options) { o.log = f }}
+}
+
 // Retry calls f, retrying with exponential backoff on errors. After the first error, will wait
-// MinDelay before retrying. Each successive retry waits for twice as long, up to MaxDelay.
+// MinDelay before retrying. Each successive retry waits for twice as long, up to MaxDelay. f might
+// be failing because an upstream system is overloaded and retries may exacerbate that problem,
+// doubling the delay means that even uncoordinated clients will eventually estimate the available
+// capacity in the upstream.
 //
 // Delays are jittered by +/-50% to avoid thundering herds. That is, the configured MinDelay is the
 // _average_ first delay, and the actual minimum delay is half of the configured. Likewise for
 // MaxDelay, the configured is the average max delay, but the actual maximum delay is 1.5x this
 // value.
 //
-// Attempts that are very old are forgotten with regard to picking the next delay. This is to make
-// Retry usable for retrying very long-running operations, for example keeping a long-lived stream
-// alive. Very old failures are considered no longer relevant to the health of the upstream system.
+// Attempts that are very old are forgotten with regard to picking the next delay because they are
+// not likely to still be relevant to the health of the upstream system. This is to make Retry
+// usable for retrying very long-running operations, for example keeping a long-lived stream alive.
 // The age is set so that if f is consistently failing once per MaxDelay, the next delay will be
 // MaxDelay, but any attempts older than the minimum needed to achieve that are forgotten.
 func Retry[T any](
@@ -85,6 +96,9 @@ func Retry[T any](
 	if o.maxDelay < o.minDelay {
 		return zero, errMaxDelayBelowMin
 	}
+	if o.attempts <= 0 {
+		return zero, errNoAttempts
+	}
 
 	var attempts []time.Time
 	// This is the number of attempts needed to reach maxDelay. We can discard any more attempts
@@ -96,7 +110,8 @@ func Retry[T any](
 
 	var lastErr error
 	start := time.Now()
-	for i := 0; i < o.attempts; i++ {
+	i := 0
+	for {
 		now := time.Now()
 		t, err := f(ctx)
 		if err == nil {
@@ -109,7 +124,7 @@ func Retry[T any](
 			return zero, ctx.Err()
 		}
 		if !o.retryable(err) {
-			return zero, err
+			return zero, fmt.Errorf("not retryable: %w", err)
 		}
 		lastErr = err
 
@@ -119,24 +134,36 @@ func Retry[T any](
 			attempts = attempts[1:]
 		}
 
-		d := saturatingShift(o.minDelay, len(attempts))
-		if d > o.maxDelay {
-			d = o.maxDelay
+		i++
+		if i < 0 {
+			i = math.MaxInt
 		}
-		jitter := time.Duration(rand.Int63n(int64(d)))
-		ok := sleepContext(ctx, saturatingAdd(d/2, jitter))
+		if o.attempts != math.MaxInt && i == o.attempts {
+			break
+		}
+
+		avgDelay := saturatingShift(o.minDelay, len(attempts))
+		if avgDelay > o.maxDelay {
+			avgDelay = o.maxDelay
+		}
+		jitter := time.Duration(rand.Int63n(int64(avgDelay)))
+		delay := saturatingAdd(avgDelay/2, jitter)
+
+		if o.log != nil {
+			o.log(err, i-1, delay)
+		}
+
+		ok := sleepContext(ctx, delay)
 		if !ok {
 			return zero, lastErr
 		}
 
 		attempts = append(attempts, now)
-	}
-	if lastErr == nil {
-		return zero, errNoAttempts
+
 	}
 	return zero, fmt.Errorf(
 		"gave up after %d attempts over %s: %w",
-		o.attempts,
+		i,
 		time.Since(start),
 		lastErr,
 	)
