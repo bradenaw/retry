@@ -172,7 +172,8 @@ func Retry[T any](
 const maxDuration = time.Duration(math.MaxInt64)
 
 func saturatingShift(d time.Duration, s int) time.Duration {
-	if s > bits.LeadingZeros64(uint64(d)) {
+	// >= because duration is signed
+	if s >= bits.LeadingZeros64(uint64(d)) {
 		return maxDuration
 	}
 	return d << s
