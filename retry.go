@@ -110,9 +110,9 @@ func Retry[T any](
 	// This is the number of attempts needed to reach maxDelay. We can discard any more attempts
 	// than this, because they won't matter to our delay calculation.
 	attemptsSize := int(math.Ceil(math.Log2(o.maxDelay.Seconds()) - math.Log2(o.minDelay.Seconds())))
-	// This is the age we'd have to keep so that if f was consistently failing every maxDelay, we'd
-	// still wait maxDelay next time.
-	attemptsMaxAge := saturatingMul(o.maxDelay, attemptsSize)
+	// This is the age we'd have to keep so that if f was consistently failing every maxDelay*3/2,
+	// we'd still wait maxDelay next time.
+	attemptsMaxAge := saturatingMul(o.maxDelay, attemptsSize*3/2)
 
 	var lastErr error
 	start := o.clock.Now()

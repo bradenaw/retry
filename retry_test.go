@@ -3,7 +3,6 @@ package retry
 import (
 	"context"
 	"errors"
-	"math/rand"
 	"testing"
 	"time"
 )
@@ -57,63 +56,64 @@ func TestRetryBasic(t *testing.T) {
 }
 
 func TestDecay(t *testing.T) {
-	rand.Seed(int64(time.Now().UnixNano()))
-	start := time.Now()
-	c := &testClock{now: start}
-	i := 0
+	for j := 0; j < 1000; j++ { // do it a couple of times because jitters are random
+		start := time.Now()
+		c := &testClock{now: start}
+		i := 0
 
-	// attempt      0   1   2   3   4   5   6   7
-	// avgDelay     10  20  40  80  160 320 640 800
+		// attempt      0   1   2   3   4   5   6   7
+		// avgDelay     10  20  40  80  160 320 640 800
 
-	var delays []time.Duration
-	v, err := Retry(
-		context.Background(),
-		func(ctx context.Context) (int, error) {
-			defer func() { i++ }()
+		var delays []time.Duration
+		v, err := Retry(
+			context.Background(),
+			func(ctx context.Context) (int, error) {
+				defer func() { i++ }()
 
-			if i >= 21 {
-				return 21, nil
-			}
-			if i >= 20 {
-				c.SleepContext(ctx, 7*800*time.Millisecond)
-			}
-			return 0, errors.New("fail")
-		},
-		withClock(c),
-		Log(func(_ error, _ int, d time.Duration) {
-			delays = append(delays, d)
-		}),
-		MinDelay(10*time.Millisecond),
-		MaxDelay(800*time.Millisecond),
-		Indefinitely(),
-	)
-	if err != nil {
-		t.Fatalf("expected nil err, got %s", err)
+				if i >= 21 {
+					return 21, nil
+				}
+				if i >= 20 {
+					c.SleepContext(ctx, 7*800*3/2*time.Millisecond)
+				}
+				return 0, errors.New("fail")
+			},
+			withClock(c),
+			Log(func(_ error, _ int, d time.Duration) {
+				delays = append(delays, d)
+			}),
+			MinDelay(10*time.Millisecond),
+			MaxDelay(800*time.Millisecond),
+			Indefinitely(),
+		)
+		if err != nil {
+			t.Fatalf("expected nil err, got %s", err)
+		}
+		if v != 21 {
+			t.Fatalf("expected 21 return, got %d", v)
+		}
+		if len(delays) != 21 {
+			t.Fatalf("expected 21 delays, got %d", len(delays))
+		}
+
+		t.Logf("delays %v", delays)
+		t.Logf("delays[0:8] %v", delays[0:8])
+		t.Logf("delays[8:20] %v", delays[8:20])
+		t.Logf("delays[20] %v", delays[20])
+
+		requireInJitter(t, delays[0], 10*time.Millisecond)
+		requireInJitter(t, delays[1], 20*time.Millisecond)
+		requireInJitter(t, delays[2], 40*time.Millisecond)
+		requireInJitter(t, delays[3], 80*time.Millisecond)
+		requireInJitter(t, delays[4], 160*time.Millisecond)
+		requireInJitter(t, delays[5], 320*time.Millisecond)
+		requireInJitter(t, delays[6], 640*time.Millisecond)
+		requireInJitter(t, delays[7], 800*time.Millisecond)
+		for i := 7; i < 20; i++ {
+			requireInJitter(t, delays[i], 800*time.Millisecond)
+		}
+		requireInJitter(t, delays[20], 10*time.Millisecond)
 	}
-	if v != 21 {
-		t.Fatalf("expected 21 return, got %d", v)
-	}
-	if len(delays) != 21 {
-		t.Fatalf("expected 21 delays, got %d", len(delays))
-	}
-
-	t.Logf("delays %v", delays)
-	t.Logf("delays[0:8] %v", delays[0:8])
-	t.Logf("delays[8:20] %v", delays[8:20])
-	t.Logf("delays[20] %v", delays[20])
-
-	requireInJitter(t, delays[0], 10*time.Millisecond)
-	requireInJitter(t, delays[1], 20*time.Millisecond)
-	requireInJitter(t, delays[2], 40*time.Millisecond)
-	requireInJitter(t, delays[3], 80*time.Millisecond)
-	requireInJitter(t, delays[4], 160*time.Millisecond)
-	requireInJitter(t, delays[5], 320*time.Millisecond)
-	requireInJitter(t, delays[6], 640*time.Millisecond)
-	requireInJitter(t, delays[7], 800*time.Millisecond)
-	for i := 7; i < 20; i++ {
-		requireInJitter(t, delays[i], 800*time.Millisecond)
-	}
-	requireInJitter(t, delays[20], 10*time.Millisecond)
 }
 
 func requireInJitter(t *testing.T, d time.Duration, exp time.Duration) {
