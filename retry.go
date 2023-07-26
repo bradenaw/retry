@@ -22,6 +22,7 @@ type options struct {
 	attempts  int
 	retryable func(error) bool
 	log       func(error, int, time.Duration)
+	clock     clock
 }
 
 // The minimum delay between attempts.
@@ -55,6 +56,10 @@ func Log(f func(error, int, time.Duration)) Option {
 	return Option{func(o *options) { o.log = f }}
 }
 
+func withClock(clock clock) Option {
+	return Option{func(o *options) { o.clock = clock }}
+}
+
 // Retry calls f, retrying with exponential backoff on errors. After the first error, will wait
 // MinDelay before retrying. Each successive retry waits for twice as long, up to MaxDelay. f might
 // be failing because an upstream system is overloaded and retries may exacerbate that problem,
@@ -83,6 +88,7 @@ func Retry[T any](
 		maxDelay:  60 * time.Second,
 		attempts:  5,
 		retryable: alwaysRetry,
+		clock:     realClock{},
 	}
 	for _, option := range opts {
 		option.apply(&o)
@@ -103,16 +109,15 @@ func Retry[T any](
 	var attempts []time.Time
 	// This is the number of attempts needed to reach maxDelay. We can discard any more attempts
 	// than this, because they won't matter to our delay calculation.
-	attemptsSize := ilog2(uint64(o.maxDelay)) - ilog2(uint64(o.minDelay))
-	// This is the age we'd have to keep so that if f was consistently failing every maxDelay*3/2,
-	// we'd still wait maxDelay next time.
-	attemptsMaxAge := saturatingMul(o.maxDelay, attemptsSize*3/2)
+	attemptsSize := int(math.Ceil(math.Log2(o.maxDelay.Seconds()) - math.Log2(o.minDelay.Seconds())))
+	// This is the age we'd have to keep so that if f was consistently failing every maxDelay, we'd
+	// still wait maxDelay next time.
+	attemptsMaxAge := saturatingMul(o.maxDelay, attemptsSize)
 
 	var lastErr error
-	start := time.Now()
+	start := o.clock.Now()
 	i := 0
 	for {
-		now := time.Now()
 		t, err := f(ctx)
 		if err == nil {
 			return t, nil
@@ -128,6 +133,7 @@ func Retry[T any](
 		}
 		lastErr = err
 
+		now := o.clock.Now()
 		for len(attempts) > attemptsSize ||
 			(len(attempts) > 0 && now.Sub(attempts[0]) > attemptsMaxAge) {
 
@@ -153,7 +159,7 @@ func Retry[T any](
 			o.log(err, i-1, delay)
 		}
 
-		ok := sleepContext(ctx, delay)
+		ok := o.clock.SleepContext(ctx, delay)
 		if !ok {
 			return zero, lastErr
 		}
@@ -201,7 +207,18 @@ func ilog2(x uint64) int {
 	return 64 - bits.LeadingZeros64(x-1)
 }
 
-func sleepContext(ctx context.Context, d time.Duration) bool {
+type clock interface {
+	Now() time.Time
+	SleepContext(ctx context.Context, d time.Duration) bool
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time {
+	return time.Now()
+}
+
+func (realClock) SleepContext(ctx context.Context, d time.Duration) bool {
 	deadline, ok := ctx.Deadline()
 	if ok && time.Until(deadline) < d {
 		return false
