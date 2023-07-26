@@ -84,8 +84,8 @@ func Retry[T any](
 	var zero T
 
 	o := options{
-		minDelay:  10 * time.Millisecond,
-		maxDelay:  60 * time.Second,
+		minDelay:  20 * time.Millisecond,
+		maxDelay:  10 * time.Second,
 		attempts:  5,
 		retryable: alwaysRetry,
 		clock:     realClock{},
